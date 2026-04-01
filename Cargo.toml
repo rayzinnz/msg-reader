@@ -1,0 +1,11 @@
+[package]
+name = "msg-reader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+cfb = "0.x"
+chrono = "0.x"
+compressed-rtf = "1.0"
+encoding_rs = "0.x"
