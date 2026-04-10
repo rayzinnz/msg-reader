@@ -1,15 +1,24 @@
 ﻿//ref: https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxmsg/b046868c-9fbf-41ae-9ffb-8de2bd4eec82
 //     https://officeprotocoldoc.z19.web.core.windows.net/files/MS-OXMSG/%5BMS-OXMSG%5D-080425.pdf
 
-use std::{fs::File, io::Read, path::{Path, PathBuf}};
+use std::{env, fs::{self, File}, io::Read, path::{Path, PathBuf}};
 
 use anyhow::{Result, bail};
 use cfb::CompoundFile;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use compressed_rtf::decompress_rtf;
 use encoding_rs::UTF_16LE;
+use extract_text::extract_text_from_file_to_string;
+use helper_lib::{datetime::windows_filetime_to_utc, llm::{LLMCloudflare, get_image_description_from_bytes}};
+use html_to_markdown_rs::{ConversionOptions};
+use tokio::runtime::Runtime;
 
 mod rtf_html_deencapsulate;
+
+//TODO move to config.toml
+const URL_BASE:&str = "https://vlm.rayzinnz.com";
+const CF_ACCESS_CLIENT_ID:&str = "b90805322b201e6ed655aaddff1effe9.access";
+const CF_ACCESS_CLIENT_SECRET_ENV:&str = "CF_ACCESS_CLIENT_SECRET";
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -65,14 +74,14 @@ pub struct MsgContents {
 	pub recipients: Vec<MsgRecipient>,
 }
 
-pub fn windows_filetime_to_utc(windows_filetime:u64) -> DateTime<Utc> {
-	//windows filetime = 100-nanosecond intervals since January 1, 1601 UTC
-	let us_since_1601 = windows_filetime / 10; // Convert 100-nanosecond intervals to microseconds
-	let td = chrono::Duration::microseconds(us_since_1601 as i64); // Convert to Duration and add to 1601-01-01 00:00:00 UTC
-	let utc_date = Utc.with_ymd_and_hms(1601,1,1,0,0,0).unwrap();
-	let utc_date = utc_date.checked_add_signed(td).unwrap();
-	utc_date
-}
+// pub fn windows_filetime_to_utc(windows_filetime:u64) -> DateTime<Utc> {
+// 	//windows filetime = 100-nanosecond intervals since January 1, 1601 UTC
+// 	let us_since_1601 = windows_filetime / 10; // Convert 100-nanosecond intervals to microseconds
+// 	let td = chrono::Duration::microseconds(us_since_1601 as i64); // Convert to Duration and add to 1601-01-01 00:00:00 UTC
+// 	let utc_date = Utc.with_ymd_and_hms(1601,1,1,0,0,0).unwrap();
+// 	let utc_date = utc_date.checked_add_signed(td).unwrap();
+// 	utc_date
+// }
 
 fn get_substg_string(cfbf: &mut CompoundFile<File>, path: &Path, tag: &str) -> String {
 	let mut rtn = String::new();
@@ -298,4 +307,119 @@ pub fn get_msg(cfbf: &mut CompoundFile<File>, path: PathBuf) -> Result<MsgConten
 pub fn get_msg_from_file(msg_filepath:&Path) -> Result<MsgContents> {
 	let mut cfbf = cfb::open(msg_filepath)?;
 	get_msg(&mut cfbf, PathBuf::from("/"))
+}
+
+fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize) -> Result<String> {
+
+	let markdown_options = ConversionOptions::builder()
+		.extract_metadata(false)
+		.build();
+	// let markdown_meta_config = html_to_markdown_rs::MetadataConfig::default();
+	let markdown_conversion_result = html_to_markdown_rs::convert(&msg.html, Some(markdown_options))?;
+	let mut markdown = markdown_conversion_result.content.unwrap_or_default();
+
+	let codeblock;
+	if msg_depth==0 {
+		codeblock = "```";
+	} else {
+		codeblock = "~~~";
+	}
+
+	markdown = format!("# **{}**\n\n{}", msg.subject, markdown);
+
+	if include_attachment_descriptions {
+		let cf_access_client_secret = &env::var(CF_ACCESS_CLIENT_SECRET_ENV).expect(&format!("could not get env var {}", CF_ACCESS_CLIENT_SECRET_ENV));
+		let endpoint = LLMCloudflare {
+			url: URL_BASE.into(),
+			access_client_id: CF_ACCESS_CLIENT_ID.into(),
+			access_client_secret: cf_access_client_secret.into(),
+		};
+
+		let mut has_attachments= false;
+		for att in &msg.attachments {
+			// println!("att.content_id: {}, {}", att.content_id, att.content_id==String::new());
+
+			let mut text_description = String::new();
+			if matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
+
+				println!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject);
+				if let Ok(rt) = Runtime::new() {
+					let _rt_result = rt.block_on(async {
+						let endpoint2 = endpoint.clone();
+						match get_image_description_from_bytes(endpoint2.into(), &att.mimetype, &att.data).await {
+							Ok(image_description) => {
+								// println!("image_description\n{}", image_description);
+								text_description = image_description;
+								Ok(())
+							}
+							Err(e) => {
+								// keep_going.store(false, Ordering::Relaxed);
+								bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
+							}
+						}
+					});
+				}
+			} else {
+				//else just get text contents
+				let att_filename;
+				if !att.long_filename.is_empty() {
+					att_filename = &att.long_filename;
+				} else {
+					att_filename = &att.filename;
+				}
+				let attachment_temp_path = env::temp_dir().join(att_filename);
+				fs::write(&attachment_temp_path, &att.data)?;
+				text_description = extract_text_from_file_to_string(&attachment_temp_path, None, None)?;
+			}
+
+			if !att.content_id.is_empty() && markdown.contains(&att.content_id) {
+				let description = format!(r"
+
+[IMAGE {}]
+
+{}image-description
+{}
+{}
+
+\[END IMAGE]
+
+", att.content_id, codeblock, text_description, codeblock);
+				markdown = markdown.replace(&att.content_id, &description);
+			} else {
+				if !has_attachments {
+					has_attachments = true;
+					markdown.push_str("\n\n[ATTACHMENTS]\n\n");
+				}
+				let att_name;
+				if !att.long_filename.is_empty() {
+					att_name = &att.long_filename;
+				} else if !att.filename.is_empty() {
+					att_name = &att.filename;
+				} else {
+					att_name = &att.display_name;
+				}
+				markdown.push_str(&format!("=================\n\n**Attachment name:** {}\n\n", att_name));
+				markdown.push_str(&format!("\n{}\n{}\n{}\n\n", codeblock, text_description, codeblock));
+			}
+		}
+
+		for sub_msg in &msg.sub_msgs {
+			if !has_attachments {
+				has_attachments = true;
+				markdown.push_str("\n\n=================\n**[ATTACHMENTS]**\n=================\n");
+			}
+			markdown.push_str(&format!("\n\n**Attached Email: {}**\n\n", sub_msg.subject));
+			let sub_markdown = msg_get_markdown(sub_msg, include_attachment_descriptions, msg_depth+1)?;
+			markdown.push_str(&format!("\n{}\n{}\n{}\n\n", codeblock, sub_markdown, codeblock));
+		}
+	}
+
+	Ok(markdown)
+
+}
+
+pub fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bool) -> Result<String> {
+	let markdown = msg_get_markdown(msg, include_attachment_descriptions, 0)?;
+	
+	Ok(markdown)
 }
