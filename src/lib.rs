@@ -9,16 +9,12 @@ use chrono::{DateTime, Utc};
 use compressed_rtf::decompress_rtf;
 use encoding_rs::UTF_16LE;
 use extract_text::extract_text_from_file_to_string;
-use helper_lib::{datetime::windows_filetime_to_utc, llm::{LLMCloudflare, get_image_description_from_bytes}};
+use helper_lib::{asyncs::{self, TxLog}, datetime::windows_filetime_to_utc, llm::{LLMEndpoint, get_image_description_from_bytes}};
 use html_to_markdown_rs::{ConversionOptions};
-use tokio::runtime::Runtime;
+use log::Level;
+use tokio::sync::mpsc;
 
 mod rtf_html_deencapsulate;
-
-//TODO move to config.toml
-const URL_BASE:&str = "https://vlm.rayzinnz.com";
-const CF_ACCESS_CLIENT_ID:&str = "b90805322b201e6ed655aaddff1effe9.access";
-const CF_ACCESS_CLIENT_SECRET_ENV:&str = "CF_ACCESS_CLIENT_SECRET";
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -309,7 +305,7 @@ pub fn get_msg_from_file(msg_filepath:&Path) -> Result<MsgContents> {
 	get_msg(&mut cfbf, PathBuf::from("/"))
 }
 
-fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize) -> Result<String> {
+async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxLog>>) -> Result<String> {
 
 	let markdown_options = ConversionOptions::builder()
 		.extract_metadata(false)
@@ -328,36 +324,24 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 	markdown = format!("# **{}**\n\n{}", msg.subject, markdown);
 
 	if include_attachment_descriptions {
-		let cf_access_client_secret = &env::var(CF_ACCESS_CLIENT_SECRET_ENV).expect(&format!("could not get env var {}", CF_ACCESS_CLIENT_SECRET_ENV));
-		let endpoint = LLMCloudflare {
-			url: URL_BASE.into(),
-			access_client_id: CF_ACCESS_CLIENT_ID.into(),
-			access_client_secret: cf_access_client_secret.into(),
-		};
-
 		let mut has_attachments= false;
 		for att in &msg.attachments {
 			// println!("att.content_id: {}, {}", att.content_id, att.content_id==String::new());
 
-			let mut text_description = String::new();
-			if matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
+			let text_description;
+			if llm_endpoint.is_some() && matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
 
-				println!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject);
-				if let Ok(rt) = Runtime::new() {
-					let _rt_result = rt.block_on(async {
-						let endpoint2 = endpoint.clone();
-						match get_image_description_from_bytes(endpoint2.into(), &att.mimetype, &att.data).await {
-							Ok(image_description) => {
-								// println!("image_description\n{}", image_description);
-								text_description = image_description;
-								Ok(())
-							}
-							Err(e) => {
-								// keep_going.store(false, Ordering::Relaxed);
-								bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
-							}
-						}
-					});
+				asyncs::send_tx_msg_op(progress_tx, Some(Level::Info), &format!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject)).await?;
+				let endpoint2 = llm_endpoint.clone();
+				match get_image_description_from_bytes(endpoint2.unwrap(), &att.mimetype, &att.data).await {
+					Ok(image_description) => {
+						// println!("image_description\n{}", image_description);
+						text_description = image_description;
+					}
+					Err(e) => {
+						// keep_going.store(false, Ordering::Relaxed);
+						bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e)
+					}
 				}
 			} else {
 				//else just get text contents
@@ -369,6 +353,7 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 				}
 				let attachment_temp_path = env::temp_dir().join(att_filename);
 				fs::write(&attachment_temp_path, &att.data)?;
+				asyncs::send_tx_msg_op(progress_tx, Some(Level::Info), &format!("getting file text contents attachment {} in message '{}'", att_filename, msg.subject)).await?;
 				text_description = extract_text_from_file_to_string(&attachment_temp_path, None, None)?;
 			}
 
@@ -409,7 +394,8 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 				markdown.push_str("\n\n=================\n**[ATTACHMENTS]**\n=================\n");
 			}
 			markdown.push_str(&format!("\n\n**Attached Email: {}**\n\n", sub_msg.subject));
-			let sub_markdown = msg_get_markdown(sub_msg, include_attachment_descriptions, msg_depth+1)?;
+			asyncs::send_tx_msg_op(progress_tx, Some(Level::Info), &format!("getting msg attachment '{}' inside message '{}'", sub_msg.subject, msg.subject)).await?;
+			let sub_markdown = Box::pin(msg_get_markdown(sub_msg, include_attachment_descriptions, msg_depth+1, llm_endpoint, None)).await?;
 			markdown.push_str(&format!("\n{}\n{}\n{}\n\n", codeblock, sub_markdown, codeblock));
 		}
 	}
@@ -418,8 +404,8 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 
 }
 
-pub fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bool) -> Result<String> {
-	let markdown = msg_get_markdown(msg, include_attachment_descriptions, 0)?;
+pub async fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bool, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxLog>>) -> Result<String> {
+	let markdown = msg_get_markdown(msg, include_attachment_descriptions, 0, llm_endpoint, progress_tx).await?;
 	
 	Ok(markdown)
 }

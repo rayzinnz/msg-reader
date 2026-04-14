@@ -12,4 +12,5 @@ encoding_rs = "0.x"
 extract_text = { git = "https://github.com/rayzinnz/rust-extract-text.git" }
 helper_lib = { git = "https://github.com/rayzinnz/rust-helper-lib.git" }
 html-to-markdown-rs = "3"
+log = "0.4.29"
 tokio = { version = "1.0", features = ["full"] }
