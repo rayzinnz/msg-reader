@@ -1,6 +1,6 @@
 use std::{env, path::Path};
 
-use helper_lib::{asyncs::TxLog, llm::{LLMEndpoint, LLMCloudflare}};
+use helper_lib::{asyncs::{TxLevel,TxMsg}, llm::{LLMEndpoint, LLMCloudflare}};
 use log::*;
 use msg_reader::{convert_to_markdown, get_msg_from_file};
 use tokio::{runtime::Runtime, sync::mpsc};
@@ -33,22 +33,24 @@ fn main() {
                 access_client_secret: cf_access_client_secret.to_string()
             });
             
-            let (progress_tx, mut progress_rx) = mpsc::channel::<TxLog>(32);
+            let (progress_tx, mut progress_rx) = mpsc::channel::<TxMsg>(32);
             
             // Spawn the work task in a separate task so we can receive progress concurrently
-            let work_handle = tokio::spawn(async move { convert_to_markdown(&msg, true, &Some(llm_endpoint), Some(&progress_tx)).await });
+            let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &Some(llm_endpoint), Some(&progress_tx)) });
+            //let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &None, Some(&progress_tx)) });
             // let md = convert_to_markdown(&msg, true, &None, Some(progress_tx)).await.unwrap();
             // println!("{}", md);
 
             // Receive and print progress messages as they arrive
-            while let Some(status) = progress_rx.recv().await {
-                match status {
-                    TxLog::PrintLn { message } => { println!("{}", message); },
-                    TxLog::Error { message } => { error!("{}", message); }
-                    TxLog::Warning { message } => { warn!("{}", message); }
-                    TxLog::Info { message } => { info!("{}", message); }
-                    TxLog::Debug { message } => { debug!("{}", message); }
-                    TxLog::Trace { message } => { trace!("{}", message); }
+            while let Some(txmsg) = progress_rx.recv().await {
+                match txmsg.txlevel {
+                    TxLevel::Progress => { println!("{}", txmsg.message); },
+                    TxLevel::PrintLn => { println!("{}", txmsg.message); },
+                    TxLevel::Error => { error!("{}", txmsg.message); }
+                    TxLevel::Warn => { warn!("{}", txmsg.message); }
+                    TxLevel::Info => { info!("{}", txmsg.message); }
+                    TxLevel::Debug => { debug!("{}", txmsg.message); }
+                    TxLevel::Trace => { trace!("{}", txmsg.message); }
                 }
             }
 
