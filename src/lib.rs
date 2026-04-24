@@ -305,7 +305,7 @@ pub fn get_msg_from_file(msg_filepath:&Path) -> Result<MsgContents> {
 	get_msg(&mut cfbf, PathBuf::from("/"))
 }
 
-fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
+async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
 
 	let markdown_options = ConversionOptions::builder()
 		.extract_metadata(false)
@@ -331,22 +331,18 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 			let mut text_description= String::new();
 			if llm_endpoint.is_some() && matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
 
-				asyncs::send_tx_msg_op_sync(progress_tx, TxLevel::Info, &format!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject))?;
+				asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject)).await?;
 				let endpoint2 = llm_endpoint.clone();
-				if let Ok(rt) = Runtime::new() {
-					let _rt_result = rt.block_on(async {
-						match get_image_description_from_bytes(endpoint2.unwrap(), &att.mimetype, &att.data).await {
-							Ok(image_description) => {
-								// println!("image_description\n{}", image_description);
-								text_description = image_description;
-							}
-							Err(e) => {
-								// keep_going.store(false, Ordering::Relaxed);
-								//bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
-								asyncs::send_tx_msg_op(progress_tx, TxLevel::Error, &format!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e)).await.unwrap_or_default();
-							}
-						}
-					});
+				match get_image_description_from_bytes(endpoint2.unwrap(), &att.mimetype, &att.data).await {
+					Ok(image_description) => {
+						// println!("image_description\n{}", image_description);
+						text_description = image_description;
+					}
+					Err(e) => {
+						// keep_going.store(false, Ordering::Relaxed);
+						//bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
+						asyncs::send_tx_msg_op(progress_tx, TxLevel::Error, &format!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e)).await.unwrap_or_default();
+					}
 				}
 			} else {
 				//else just get text contents
@@ -358,7 +354,7 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 				}
 				let attachment_temp_path = env::temp_dir().join(att_filename);
 				fs::write(&attachment_temp_path, &att.data)?;
-				asyncs::send_tx_msg_op_sync(progress_tx, TxLevel::Info, &format!("getting file text contents attachment {} in message '{}'", att_filename, msg.subject))?;
+				asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting file text contents attachment {} in message '{}'", att_filename, msg.subject)).await?;
 				text_description = extract_text_from_file_to_string(&attachment_temp_path, None, None, progress_tx)?;
 			}
 
@@ -399,8 +395,8 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 				markdown.push_str("\n\n=================\n**[ATTACHMENTS]**\n=================\n");
 			}
 			markdown.push_str(&format!("\n\n**Attached Email: {}**\n\n", sub_msg.subject));
-			asyncs::send_tx_msg_op_sync(progress_tx, TxLevel::Info, &format!("getting msg attachment '{}' inside message '{}'", sub_msg.subject, msg.subject))?;
-			let sub_markdown = msg_get_markdown(sub_msg, include_attachment_descriptions, msg_depth+1, llm_endpoint, None)?;
+			asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting msg attachment '{}' inside message '{}'", sub_msg.subject, msg.subject)).await?;
+			let sub_markdown = Box::pin(msg_get_markdown(sub_msg, include_attachment_descriptions, msg_depth+1, llm_endpoint, None)).await?;
 			markdown.push_str(&format!("\n{}\n{}\n{}\n\n", codeblock, sub_markdown, codeblock));
 		}
 	}
@@ -410,7 +406,17 @@ fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg
 }
 
 pub fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bool, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
-	let markdown = msg_get_markdown(msg, include_attachment_descriptions, 0, llm_endpoint, progress_tx)?;
-	
-	Ok(markdown)
+	let rt = Runtime::new()?;
+	match rt.block_on(async {
+			msg_get_markdown(msg, include_attachment_descriptions, 0, llm_endpoint, progress_tx).await
+		}) {
+		Ok(markdown) => {
+			Ok(markdown)
+		}
+		Err(e) => Err(e)
+	}
+}
+
+pub async fn convert_to_markdown_async(msg: &MsgContents, include_attachment_descriptions:bool, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
+	msg_get_markdown(msg, include_attachment_descriptions, 0, llm_endpoint, progress_tx).await
 }
