@@ -55,7 +55,7 @@ pub struct MsgContents {
 	pub conversation_index: Vec<u8>, //0071
 	pub sender_name: String, //0C1A
 	pub sender_email_address: String, //0C1F
-	pub sender_smtp_address: String, //5D01
+	pub sender_smtp_address: String, //5D01 = sender, 5D0A = original sender
 	pub received_by_name: String, //0040
 	pub received_by_email_address: String, //0076
 	pub received_by_smtp_address: String, //5D07
@@ -273,6 +273,11 @@ pub fn get_msg(cfbf: &mut CompoundFile<File>, path: PathBuf) -> Result<MsgConten
 		}
 	}
 
+	let mut sender_smtp_address = get_substg_string(cfbf, &path, "5D01"); //sender smtp address
+	if sender_smtp_address.is_empty() {
+		sender_smtp_address = get_substg_string(cfbf, &path, "5D0A"); //5D0A = original sender smtp (if mail was forwarded)
+	}
+
 	let rtn:MsgContents = MsgContents {
 		sent_time,
 		received_time,
@@ -282,7 +287,7 @@ pub fn get_msg(cfbf: &mut CompoundFile<File>, path: PathBuf) -> Result<MsgConten
 		conversation_index: get_substg_binary(cfbf, &path, "0071"), //
 		sender_name: get_substg_string(cfbf, &path, "0C1A"), //0C1A
 		sender_email_address: get_substg_string(cfbf, &path, "0C1F"), //0C1F
-		sender_smtp_address: get_substg_string(cfbf, &path, "5D01"), //5D01
+		sender_smtp_address: sender_smtp_address,
 		received_by_name: get_substg_string(cfbf, &path, "0040"), //0040
 		received_by_email_address: get_substg_string(cfbf, &path, "0076"), //0076
 		received_by_smtp_address: get_substg_string(cfbf, &path, "5D07"), //5D07
