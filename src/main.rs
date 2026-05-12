@@ -2,7 +2,7 @@ use std::{env, path::Path};
 
 use helper_lib::{asyncs::{TxLevel,TxMsg}, llm::{LLMEndpoint, LLMCloudflare}};
 use log::*;
-use msg_reader::{convert_to_markdown, get_msg_from_file};
+use msg_reader::{convert_to_markdown_async, get_msg_from_file};
 use tokio::{runtime::Runtime, sync::mpsc};
 
 //TODO move to config.toml
@@ -11,9 +11,10 @@ const CF_ACCESS_CLIENT_ID:&str = "b90805322b201e6ed655aaddff1effe9.access";
 const CF_ACCESS_CLIENT_SECRET_ENV:&str = "CF_ACCESS_CLIENT_SECRET";
 
 fn main() {
-    helper_lib::setup_logger(LevelFilter::Info);
+    helper_lib::setup_logger(LevelFilter::Debug, None, "", "html5ever");
 
-    let filepath = Path::new(r"C:\Users\hrag\OutlookData\ITSolutionsTickets\2026\00000000812638D851360E448831BA5A9840D7BF07002E78EC35ADE8584380BC921B7514433600000000770600002E78EC35ADE8584380BC921B7514433600000000BFFF0000.msg");
+    // let filepath = Path::new(r"C:\Users\hrag\temp\msg_examples\msg_in_msg.msg");
+    let filepath = Path::new(r"C:\Users\hrag\temp\msg_examples\pkcs7_signed_email_p7m.msg");
     let msg = get_msg_from_file(filepath).unwrap();
 
     // println!("{}", msg.html);
@@ -25,43 +26,79 @@ fn main() {
     //     println!("{}", att.content_id)
     // }
 
-    // if let Ok(rt) = Runtime::new() {
-    // 	let _rt_result = rt.block_on(async {
-    //         let cf_access_client_secret = &env::var(CF_ACCESS_CLIENT_SECRET_ENV).expect(&format!("could not get env var {}", CF_ACCESS_CLIENT_SECRET_ENV));
-    //         let llm_endpoint = LLMEndpoint::Cloudflare(LLMCloudflare { 
-    //             url: URL_BASE.to_string(), 
-    //             access_client_id: CF_ACCESS_CLIENT_ID.to_string(), 
-    //             access_client_secret: cf_access_client_secret.to_string()
-    //         });
-            
-    //         let (progress_tx, mut progress_rx) = mpsc::channel::<TxMsg>(32);
-            
-    //         // Spawn the work task in a separate task so we can receive progress concurrently
-    //         let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &Some(llm_endpoint), Some(&progress_tx)) });
-    //         //let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &None, Some(&progress_tx)) });
-    //         // let md = convert_to_markdown(&msg, true, &None, Some(progress_tx)).await.unwrap();
-    //         // println!("{}", md);
+    // let runtime = tokio::runtime::Runtime::new().expect("Error starting tokio::runtime");
+    // thread::scope(|s| { runtime.block_on( async { 
 
-    //         // Receive and print progress messages as they arrive
-    //         while let Some(txmsg) = progress_rx.recv().await {
-    //             match txmsg.txlevel {
-    //                 TxLevel::Progress => { println!("{}", txmsg.message); },
-    //                 TxLevel::PrintLn => { println!("{}", txmsg.message); },
-    //                 TxLevel::Error => { error!("{}", txmsg.message); }
-    //                 TxLevel::Warn => { warn!("{}", txmsg.message); }
-    //                 TxLevel::Info => { info!("{}", txmsg.message); }
-    //                 TxLevel::Debug => { debug!("{}", txmsg.message); }
-    //                 TxLevel::Trace => { trace!("{}", txmsg.message); }
-    //             }
+    //     let (progress_tx, mut progress_rx) = mpsc::channel::<TxMsg>(32);
+    //     let join_handle = thread::Builder::new()
+    //         .spawn_scoped(s, move || { convert_to_markdown(&msg, true, &None, Some(&progress_tx), &mut vec![]) })
+    //         .expect("Failed to spawn thread");
+    //     while let Some(txmsg) = progress_rx.recv().await {
+    //         match txmsg.txlevel {
+    //             TxLevel::Progress => { println!("{}", txmsg.message); },
+    //             TxLevel::PrintLn => { println!("{}", txmsg.message); },
+    //             TxLevel::Error => { error!("{}", txmsg.message); }
+    //             TxLevel::Warn => { warn!("{}", txmsg.message); }
+    //             TxLevel::Info => { info!("{}", txmsg.message); }
+    //             TxLevel::Debug => { debug!("{}", txmsg.message); }
+    //             TxLevel::Trace => { trace!("{}", txmsg.message); }
     //         }
+    //     }
+    //     match join_handle.join().unwrap() {
+    //         Ok(md) => {
 
-    //         // Wait for the work to finish and get the final result
-    //         match work_handle.await.unwrap() {
-    //             Ok(md) => (), //println!("[RESULT] {}", md),
-    //             Err(e) => eprintln!("[ERROR] {}", e),
-    //         }            
-    //     });
-    // }
+    //         },
+    //         Err(e) => {
+    //             eprintln!("[ERROR] {}", e);
+    //         }
+    //     }
+
+    // });});
+
+    if let Ok(rt) = Runtime::new() {
+    	let _rt_result = rt.block_on(async {
+            let cf_access_client_secret = &env::var(CF_ACCESS_CLIENT_SECRET_ENV).expect(&format!("could not get env var {}", CF_ACCESS_CLIENT_SECRET_ENV));
+            let llm_endpoint = LLMEndpoint::Cloudflare(LLMCloudflare { 
+                url: URL_BASE.to_string(), 
+                access_client_id: CF_ACCESS_CLIENT_ID.to_string(), 
+                access_client_secret: cf_access_client_secret.to_string()
+            });
+            
+            let (progress_tx, mut progress_rx) = mpsc::channel::<TxMsg>(32);
+
+            //example pre-described file
+            // let fd_example = FileDescription { file_crc: 3741471923040398142, description: String::from("this is this files description") };
+            // let fd_example2 = FileDescription { file_crc: 5887996252687428101, description: String::from("this is another files description") };
+            
+            // Spawn the work task in a separate task so we can receive progress concurrently
+            // let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &Some(llm_endpoint), Some(&progress_tx), &mut vec![]) });
+            //let work_handle = tokio::task::spawn_blocking(move || { convert_to_markdown(&msg, true, &None, Some(&progress_tx), &mut vec![]) });
+            let work_handle = tokio::task::spawn(async move { convert_to_markdown_async(&msg, true, &None, Some(&progress_tx), &mut vec![]).await });
+            // let md = convert_to_markdown(&msg, true, &None, Some(progress_tx)).await.unwrap();
+            // println!("{}", md);
+
+            // Receive and print progress messages as they arrive
+            while let Some(txmsg) = progress_rx.recv().await {
+                match txmsg.txlevel {
+                    TxLevel::Progress => { println!("{}", txmsg.message); },
+                    TxLevel::PrintLn => { println!("{}", txmsg.message); },
+                    TxLevel::Error => { error!("{}", txmsg.message); panic!("test panic") }
+                    TxLevel::Warn => { warn!("{}", txmsg.message); }
+                    TxLevel::Info => { info!("{}", txmsg.message); }
+                    TxLevel::Debug => { debug!("{}", txmsg.message); }
+                    TxLevel::Trace => { trace!("{}", txmsg.message); }
+                }
+            }
+
+            // Wait for the work to finish and get the final result
+            match work_handle.await.unwrap() {
+                Ok(md) =>
+                    // (),
+                    println!("[RESULT] {}", md),
+                Err(e) => eprintln!("[ERROR] {}", e),
+            }            
+        });
+    }
 
 
 }

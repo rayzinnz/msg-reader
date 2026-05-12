@@ -8,6 +8,7 @@ anyhow = "1"
 cfb = "0.x"
 chrono = "0.x"
 compressed-rtf = "1"
+crc-fast = "1.10.0"
 encoding_rs = "0.x"
 extract_text = { git = "https://github.com/rayzinnz/rust-extract-text.git" }
 helper_lib = { git = "https://github.com/rayzinnz/rust-helper-lib.git" }
