@@ -310,6 +310,41 @@ pub fn get_msg_from_file(msg_filepath:&Path) -> Result<MsgContents> {
 	get_msg(&mut cfbf, PathBuf::from("/"))
 }
 
+pub async fn get_attachment_description(msg:&MsgContents, att:&MsgAttachment, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
+	let mut text_description= String::new();
+
+	if llm_endpoint.is_some() && matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
+
+		asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject)).await?;
+		let endpoint2 = llm_endpoint.clone();
+		match get_image_description_from_bytes(endpoint2.unwrap(), &att.mimetype, &att.data).await {
+			Ok(image_description) => {
+				// println!("image_description\n{}", image_description);
+				text_description = image_description;
+			}
+			Err(e) => {
+				// keep_going.store(false, Ordering::Relaxed);
+				//bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
+				asyncs::send_tx_msg_op(progress_tx, TxLevel::Error, &format!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e)).await.unwrap_or_default();
+			}
+		}
+	} else {
+		//else just get text contents
+		let att_filename;
+		if !att.long_filename.is_empty() {
+			att_filename = &att.long_filename;
+		} else {
+			att_filename = &att.filename;
+		}
+		let attachment_temp_path = env::temp_dir().join(att_filename);
+		fs::write(&attachment_temp_path, &att.data)?;
+		asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting file text contents attachment {} in message '{}'", att_filename, msg.subject)).await?;
+		text_description = extract_text_from_file_to_string(&attachment_temp_path, None, None, progress_tx).await?;
+	}
+
+	Ok(text_description)
+}
+
 async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>, existing_file_descriptions:&mut Vec<FileDescription>) -> Result<String> {
 
 	let markdown_options = ConversionOptions::builder()
@@ -339,39 +374,11 @@ async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:boo
 			// println!("{}", file_crc);
 			let existing_file_description = existing_file_descriptions.iter().find(|f| f.file_crc==file_crc);
 
-			let mut text_description= String::new();
+			let text_description: String;
 			if let Some(existing_file_description) = existing_file_description {
 				text_description = existing_file_description.description.clone();
 			} else {
-				if llm_endpoint.is_some() && matches!(att.mimetype.as_str(), "image/png" | "image/jpeg") {
-
-					asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting image description for attachment {} in message '{}'", att.content_id, msg.subject)).await?;
-					let endpoint2 = llm_endpoint.clone();
-					match get_image_description_from_bytes(endpoint2.unwrap(), &att.mimetype, &att.data).await {
-						Ok(image_description) => {
-							// println!("image_description\n{}", image_description);
-							text_description = image_description;
-						}
-						Err(e) => {
-							// keep_going.store(false, Ordering::Relaxed);
-							//bail!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e);
-							asyncs::send_tx_msg_op(progress_tx, TxLevel::Error, &format!("Error get_image_description_from_bytes for {}\n{}", att.content_id, e)).await.unwrap_or_default();
-						}
-					}
-				} else {
-					//else just get text contents
-					let att_filename;
-					if !att.long_filename.is_empty() {
-						att_filename = &att.long_filename;
-					} else {
-						att_filename = &att.filename;
-					}
-					let attachment_temp_path = env::temp_dir().join(att_filename);
-					fs::write(&attachment_temp_path, &att.data)?;
-					asyncs::send_tx_msg_op(progress_tx, TxLevel::Info, &format!("getting file text contents attachment {} in message '{}'", att_filename, msg.subject)).await?;
-					text_description = extract_text_from_file_to_string(&attachment_temp_path, None, None, progress_tx).await?;
-				}
-
+				text_description = get_attachment_description(msg, att, llm_endpoint, progress_tx).await?;
 				existing_file_descriptions.push(FileDescription { file_crc: file_crc, description: text_description.clone() });
 			}
 			if !att.content_id.is_empty() && markdown.contains(&att.content_id) {
