@@ -1,17 +1,27 @@
 ﻿//ref: https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxmsg/b046868c-9fbf-41ae-9ffb-8de2bd4eec82
 //     https://officeprotocoldoc.z19.web.core.windows.net/files/MS-OXMSG/%5BMS-OXMSG%5D-080425.pdf
 
-use std::{env, fs::{self, File}, io::Read, path::{Path, PathBuf}};
+use std::{fs::{File}, io::Read, path::{Path, PathBuf}};
+#[cfg(feature = "markdown")]
+use std::{env, fs::{self}};
 
 use anyhow::{Result, bail};
 use cfb::CompoundFile;
 use chrono::{DateTime, Utc};
 use compressed_rtf::decompress_rtf;
+#[cfg(feature = "markdown")]
 use crc_fast::crc64_nvme;
 use encoding_rs::UTF_16LE;
+#[cfg(feature = "markdown")]
 use extract_text::extract_text_from_file_to_string;
-use helper_lib::{asyncs::{self, TxLevel, TxMsg}, datetime::windows_filetime_to_utc, llm::{LLMEndpoint, get_image_description_from_bytes}};
+use helper_lib::{datetime::windows_filetime_to_utc};
+#[cfg(feature = "markdown")]
+use helper_lib::{asyncs::{self, TxLevel, TxMsg}};
+#[cfg(feature = "markdown")]
+use helper_lib::{llm::{LLMEndpoint, get_image_description_from_bytes}};
+#[cfg(feature = "markdown")]
 use html_to_markdown_rs::{ConversionOptions};
+#[cfg(feature = "markdown")]
 use tokio::{runtime::Runtime, sync::mpsc};
 
 mod rtf_html_deencapsulate;
@@ -310,6 +320,7 @@ pub fn get_msg_from_file(msg_filepath:&Path) -> Result<MsgContents> {
 	get_msg(&mut cfbf, PathBuf::from("/"))
 }
 
+#[cfg(feature = "markdown")]
 pub async fn get_attachment_description(msg:&MsgContents, att:&MsgAttachment, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>) -> Result<String> {
 	let mut text_description= String::new();
 
@@ -345,6 +356,7 @@ pub async fn get_attachment_description(msg:&MsgContents, att:&MsgAttachment, ll
 	Ok(text_description)
 }
 
+#[cfg(feature = "markdown")]
 async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:bool, msg_depth:usize, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>, existing_file_descriptions:&mut Vec<FileDescription>) -> Result<String> {
 
 	let markdown_options = ConversionOptions::builder()
@@ -428,6 +440,7 @@ async fn msg_get_markdown(msg: &MsgContents, include_attachment_descriptions:boo
 
 }
 
+#[cfg(feature = "markdown")]
 pub fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bool, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>, existing_file_descriptions:&mut Vec<FileDescription>) -> Result<String> {
 	let rt = Runtime::new()?;
 	match rt.block_on(async {
@@ -440,6 +453,7 @@ pub fn convert_to_markdown(msg: &MsgContents, include_attachment_descriptions:bo
 	}
 }
 
+#[cfg(feature = "markdown")]
 pub async fn convert_to_markdown_async(msg: &MsgContents, include_attachment_descriptions:bool, llm_endpoint:&Option<LLMEndpoint>, progress_tx: Option<&mpsc::Sender<TxMsg>>, existing_file_descriptions:&mut Vec<FileDescription>) -> Result<String> {
 	msg_get_markdown(msg, include_attachment_descriptions, 0, llm_endpoint, progress_tx, existing_file_descriptions).await
 }

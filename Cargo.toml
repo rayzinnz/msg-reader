@@ -1,7 +1,12 @@
 [package]
 name = "msg-reader"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+
+[features]
+default = []
+markdown = ["dep:html-to-markdown-rs", "helper_lib/llm"]
+all = ["markdown"]
 
 [dependencies]
 anyhow = "1"
@@ -11,7 +16,7 @@ compressed-rtf = "1"
 crc-fast = "1.10.0"
 encoding_rs = "0.x"
 extract_text = { git = "https://github.com/rayzinnz/rust-extract-text.git" }
-helper_lib = { git = "https://github.com/rayzinnz/rust-helper-lib.git", features = ["log", "asyncs", "datetime", "llm"] }
-html-to-markdown-rs = "3"
+helper_lib = { git = "https://github.com/rayzinnz/rust-helper-lib.git", features = ["log", "asyncs", "datetime"] }
+html-to-markdown-rs = { version = "3", optional = true }
 log = "0.4.29"
 tokio = { version = "1.0", features = ["full"] }
